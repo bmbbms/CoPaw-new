@@ -19,7 +19,7 @@ ENV COPAW_SECRET_DIR=/app/working.secret
 
 # Available channels for this image.
 # Override at runtime with -e COPAW_ENABLED_CHANNELS=... if needed.
-ARG COPAW_ENABLED_CHANNELS="discord,telegram,dingtalk,feishu,qq,console"
+ARG COPAW_ENABLED_CHANNELS="discord,telegram,dingtalk,feishu,qq,console,wecom"
 ENV COPAW_ENABLED_CHANNELS=${COPAW_ENABLED_CHANNELS}
 
 ARG DEBIAN_FRONTEND=noninteractive
