@@ -41,7 +41,7 @@ import {
   LogOut,
 } from "lucide-react";
 import api from "../api";
-import { clearAuthToken } from "../api/config";
+import { clearAuthToken, getRuntimeBase } from "../api/config";
 import { authApi } from "../api/modules/auth";
 import styles from "./index.module.less";
 import { useTheme } from "../contexts/ThemeContext";
@@ -417,7 +417,13 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
         {!collapsed && (
           <div className={styles.logoWrapper}>
             <img
-              src={isDark ? "/dark-logo.png" : "/logo.png"}
+              src={`${getRuntimeBase() || ""}/logo.png`}
+              alt="CoPaw"
+              className={styles.logoImg}
+            />
+            
+            <img
+              src={isDark ? `${getRuntimeBase() || ""}/dark-logo.png` : `${getRuntimeBase() || ""}/logo.png`}
               alt="CoPaw"
               className={styles.logoImg}
             />

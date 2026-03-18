@@ -21,6 +21,8 @@ import { getApiUrl, getApiToken, clearAuthToken } from "./api/config";
 import "./styles/layout.css";
 import "./styles/form-override.css";
 
+declare const BASE_URL: string;
+
 const antdLocaleMap: Record<string, Locale> = {
   zh: zhCN,
   en: enUS,
@@ -100,7 +102,30 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 function getRouterBasename(pathname: string): string | undefined {
-  return /^\/console(?:\/|$)/.test(pathname) ? "/console" : undefined;
+  const configuredBase = (typeof BASE_URL === "string" ? BASE_URL : "")
+    .replace(/^https?:\/\/[^/]+/, "")
+    .replace(/\/$/, "");
+  if (configuredBase) {
+    return configuredBase.startsWith("/")
+      ? configuredBase
+      : `/${configuredBase}`;
+  }
+
+  if (/^\/console(?:\/|$)/.test(pathname)) {
+    return "/console";
+  }
+
+  const prefixedConsole = pathname.match(/^(.*)\/console(?:\/|$)/);
+  if (prefixedConsole && prefixedConsole[1]) {
+    return prefixedConsole[1];
+  }
+
+  const copawPrefix = pathname.match(/^\/(copaw\/[^/]+)(?:\/|$)/);
+  if (copawPrefix) {
+    return `/${copawPrefix[1]}`;
+  }
+
+  return undefined;
 }
 
 function AppInner() {

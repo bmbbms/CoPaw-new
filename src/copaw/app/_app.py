@@ -8,7 +8,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from agentscope_runtime.engine.app import AgentApp
 
@@ -32,6 +31,34 @@ from .migration import (
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
 
+# Load persisted env vars into os.environ at module import time
+# so they are available before app and path-prefix initialization.
+load_envs_into_environ()
+
+
+def _normalize_base_url(raw_base_url: str) -> str:
+    """Normalize BASE_URL to an optional path prefix."""
+    if not raw_base_url:
+        return ""
+
+    base_url = raw_base_url.strip()
+    if not base_url:
+        return ""
+
+    if "://" in base_url:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(base_url)
+        base_url = parsed.path
+
+    if not base_url.startswith("/"):
+        base_url = f"/{base_url}"
+
+    return base_url.rstrip("/")
+
+
+_BASE_URL_PREFIX = _normalize_base_url(os.environ.get("BASE_URL", ""))
+
 # Ensure static assets are served with browser-compatible MIME types across
 # platforms (notably Windows may miss .js/.mjs mappings).
 mimetypes.init()
@@ -39,11 +66,6 @@ mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/wasm", ".wasm")
-
-# Load persisted env vars into os.environ at module import time
-# so they are available before the lifespan starts.
-load_envs_into_environ()
-
 
 # Dynamic runner that selects the correct workspace runner based on request
 class DynamicMultiAgentRunner:
@@ -134,6 +156,49 @@ class DynamicMultiAgentRunner:
         return None
 
 
+class BaseURLPrefixMiddleware:
+    """Strip configured BASE_URL prefix from incoming request paths."""
+
+    def __init__(self, app, prefix: str):
+        self.app = app
+        self.prefix = prefix
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path == self.prefix or path.startswith(f"{self.prefix}/"):
+            child_path = path[len(self.prefix) :] or "/"
+            child_root = f"{scope.get('root_path', '')}{self.prefix}"
+            forwarded_scope = {
+                **scope,
+                "path": child_path,
+                "root_path": child_root,
+            }
+            await self.app(forwarded_scope, receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 404,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'{"detail":"Not Found"}',
+            }
+        )
+
+
 # Use dynamic runner for AgentApp
 runner = DynamicMultiAgentRunner()
 
@@ -221,6 +286,10 @@ app = FastAPI(
     redoc_url="/redoc" if DOCS_ENABLED else None,
     openapi_url="/openapi.json" if DOCS_ENABLED else None,
 )
+
+if _BASE_URL_PREFIX:
+    app.add_middleware(BaseURLPrefixMiddleware, prefix=_BASE_URL_PREFIX)
+    logger.info("Enabled BASE_URL path prefix: %s", _BASE_URL_PREFIX)
 
 # Add agent context middleware for agent-scoped routes
 app.add_middleware(AgentContextMiddleware)
@@ -311,6 +380,7 @@ app.include_router(voice_router, tags=["voice"])
 # fallback.
 if os.path.isdir(_CONSOLE_STATIC_DIR):
     _console_path = Path(_CONSOLE_STATIC_DIR)
+    _assets_dir = _console_path / "assets"
 
     def _serve_console_index():
         if _CONSOLE_INDEX and _CONSOLE_INDEX.exists():
@@ -334,13 +404,29 @@ if os.path.isdir(_CONSOLE_STATIC_DIR):
 
         raise HTTPException(status_code=404, detail="Not Found")
 
-    _assets_dir = _console_path / "assets"
-    if _assets_dir.is_dir():
-        app.mount(
-            "/assets",
-            StaticFiles(directory=str(_assets_dir)),
-            name="assets",
-        )
+    def _serve_console_asset(asset_path: str):
+        if not _assets_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        asset_file = (_assets_dir / asset_path).resolve()
+        if not asset_file.is_file() or _assets_dir.resolve() not in asset_file.parents:
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        return FileResponse(asset_file)
+
+    @app.get("/assets/{asset_path:path}")
+    def _assets(asset_path: str):
+        return _serve_console_asset(asset_path)
+
+    @app.get("/console/assets/{asset_path:path}")
+    def _console_prefixed_assets(asset_path: str):
+        return _serve_console_asset(asset_path)
+
+    if _BASE_URL_PREFIX:
+
+        @app.get(f"{_BASE_URL_PREFIX}/assets/{{asset_path:path}}")
+        def _base_url_prefixed_assets(asset_path: str):
+            return _serve_console_asset(asset_path)
 
     @app.get("/console")
     @app.get("/console/")
