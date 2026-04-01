@@ -631,16 +631,15 @@ class WecomChannel(BaseChannel):
         """
         if not self._client or not self._upload_lock:
             return None
-        # Strip file:// prefix
-        local = path.removeprefix("file://")
-        p = Path(local)
+        # Resolve file:// URI to local path
+        p = self._resolve_file_path(path)
         if not p.is_file():
-            logger.warning("wecom upload: file not found: %s", local[:80])
+            logger.warning("wecom upload: file not found: %s", str(p)[:80])
             return None
 
         # Compress image if needed (WeCom has 2MB limit)
         if media_type == "image":
-            data, filename = compress_image_for_wecom(local)
+            data, filename = compress_image_for_wecom(str(p))
         else:
             data = p.read_bytes()
             filename = p.name
@@ -705,7 +704,7 @@ class WecomChannel(BaseChannel):
             except Exception:
                 logger.exception(
                     "wecom _upload_media failed path=%s",
-                    local[:60],
+                    str(p)[:60],
                 )
                 return None
 
@@ -728,9 +727,9 @@ class WecomChannel(BaseChannel):
                 or ""
             )
             # WeCom voice only supports AMR; send other formats as file.
-            _local = raw_path.removeprefix("file://")
+            _p = self._resolve_file_path(raw_path)
             media_type = (
-                "voice" if Path(_local).suffix.lower() == ".amr" else "file"
+                "voice" if _p.suffix.lower() == ".amr" else "file"
             )
         elif pt == ContentType.VIDEO:
             raw_path = getattr(part, "video_url", "") or ""
@@ -839,103 +838,6 @@ class WecomChannel(BaseChannel):
             # parsed.path gives the path after stripping scheme/netloc
             return Path(unquote(parsed.path))
         return Path(file_url)
-
-    def _get_media_type(self, content_type: ContentType) -> Optional[str]:
-        """Map internal ContentType to WeComMediaType string.
-
-        WeComMediaType is a Literal type with values:
-        'file', 'image', 'voice', 'video'
-        """
-        mapping = {
-            ContentType.IMAGE: "image",
-            ContentType.FILE: "file",
-            ContentType.AUDIO: "voice",
-            ContentType.VIDEO: "video",
-        }
-        return mapping.get(content_type)
-
-    async def _send_media_part(
-        self,
-        chatid: str,
-        part: OutgoingContentPart,
-    ) -> None:
-        """Upload and send a single media part to WeCom.
-
-        Args:
-            chatid: Target chat ID.
-            part: Media content part (image, file, audio, video).
-        """
-        if not self._client or not chatid:
-            return
-
-        pt = getattr(part, "type", None)
-        if not pt:
-            return
-
-        # Get the media type mapping
-        media_type = self._get_media_type(pt)
-        if not media_type:
-            logger.warning("wecom _send_media_part: unsupported type %s", pt)
-            return
-
-        # Get file URL/path based on type
-        file_url = ""
-        if pt == ContentType.IMAGE:
-            file_url = getattr(part, "image_url", "") or ""
-        elif pt == ContentType.FILE:
-            file_url = getattr(part, "file_url", "") or ""
-        elif pt == ContentType.AUDIO:
-            file_url = getattr(part, "audio_url", "") or ""
-        elif pt == ContentType.VIDEO:
-            file_url = getattr(part, "video_url", "") or ""
-
-        if not file_url:
-            logger.warning("wecom _send_media_part: no file_url for type %s", pt)
-            return
-
-        # Resolve file path (supports file:// URI and plain path)
-        file_path = self._resolve_file_path(file_url)
-        if not file_path.is_absolute():
-            # Try as relative path from media_dir
-            file_path = Path(self._media_dir) / file_path
-
-        if not file_path.exists():
-            logger.warning("wecom _send_media_part: file not found %s", file_path)
-            return
-
-        try:
-            # Read file and upload
-            file_data = file_path.read_bytes()
-            filename = file_path.name
-
-            # Upload media
-            upload_result = await self._client.upload_media(
-                file_data,
-                type=media_type,
-                filename=filename,
-            )
-
-            media_id = (upload_result or {}).get("media_id", "")
-            if not media_id:
-                logger.error("wecom _send_media_part: upload failed for %s", filename)
-                return
-
-            # Send media message
-            await self._client.send_media_message(
-                chatid,
-                media_type=media_type,
-                media_id=media_id,
-            )
-
-            logger.info(
-                "wecom _send_media_part: sent %s (%s) to %s",
-                media_type,
-                filename,
-                chatid[:20],
-            )
-        except Exception:
-            logger.exception("wecom _send_media_part failed for %s", file_url)
-
 
     async def send_content_parts(
         self,
