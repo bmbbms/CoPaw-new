@@ -595,8 +595,7 @@ class WecomChannel(BaseChannel):
         Returns the ack frame body dict, or raises on timeout / error.
         """
         req_id = generate_req_id(cmd)
-        loop = asyncio.get_event_loop()
-        fut: asyncio.Future[Any] = loop.create_future()
+        fut: asyncio.Future[Any] = self._loop.create_future()
         self._upload_ack_futures[req_id] = fut
         try:
             await self._client._ws_manager.send(
